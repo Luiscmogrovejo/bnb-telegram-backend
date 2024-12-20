@@ -1,0 +1,33 @@
+{
+  "name": "blackjack21-backend",
+  "version": "2.0.0",
+  "description": "Backend for Blackjack21 game using Express.js, Socket.io, MongoDB, and Ethereum Smart Contracts",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "deploy-contract": "npx hardhat run scripts/deploy.js --network rinkeby"
+  },
+  "keywords": [
+    "blackjack",
+    "express",
+    "socket.io",
+    "mongodb",
+    "smart contracts",
+    "ethereum"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.3",
+    "ethers": "^6.6.2",
+    "express": "^4.18.2",
+    "mongoose": "^7.2.0",
+    "socket.io": "^4.5.4"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22",
+    "hardhat": "^2.17.0"
+  }
+}
