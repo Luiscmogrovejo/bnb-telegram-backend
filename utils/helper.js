@@ -2,6 +2,7 @@
 
 // Calculate sum of cards
 const calculateSum = (cards) => {
+  if (!Array.isArray(cards)) throw new Error("Invalid cards array");
   let sum = 0;
   let aceCount = 0;
 
@@ -60,6 +61,7 @@ const createDeck = () => {
 
 // Shuffle the deck using Fisher-Yates algorithm
 const shuffleDeck = (deck) => {
+  if (!Array.isArray(deck)) throw new Error("Invalid deck array");
   for (let i = deck.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [deck[i], deck[j]] = [deck[j], deck[i]];

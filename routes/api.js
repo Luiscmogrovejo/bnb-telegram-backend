@@ -2,70 +2,65 @@
 
 const express = require("express");
 const router = express.Router();
-const {
-  createGame,
-  joinGame,
-  handleBet,
-  handlePlayerMove,
-} = require("../controllers/gameController");
-const { leaveGame } = require("../controllers/roomController");
+const { body, validationResult } = require("express-validator");
+const { signup, login } = require("../controllers/authController");
+const { protect } = require("../middleware/authMiddleware");
 
-// Route to create a new game
-router.post("/create-game", (req, res) => {
-  // This route can be used for HTTP-based game creation if needed
-  res.status(200).json({ message: "Use Socket.io to create a game." });
-});
+// Authentication Routes
+router.post(
+  "/auth/signup",
+  [
+    body("walletAddress").isString().trim().escape(),
+    body("password")
+      .isLength({ min: 6 })
+      .matches(/^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{6,}$/)
+      .withMessage("Password must contain at least one letter and one number"),
+    // Add other validations as needed
+  ],
+  async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, errors: errors.array() });
+    }
+    try {
+      await signup(req, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
-// Route to join an existing game
-router.post("/join-game", (req, res) => {
-  // This route can be used for HTTP-based game joining if needed
-  res.status(200).json({ message: "Use Socket.io to join a game." });
-});
+router.post(
+  "/auth/login",
+  [
+    body("walletAddress").isString().trim().escape(),
+    body("password").isLength({ min: 6 }).trim().escape(),
+    // Add other validations as needed
+  ],
+  async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, errors: errors.array() });
+    }
+    try {
+      await login(req, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
-// Route to handle a player's bet
-router.post("/bet", (req, res) => {
-  // This route can be used for HTTP-based bet handling if needed
-  res.status(200).json({ message: "Use Socket.io to handle a bet." });
-});
+// Example: Get All Active Rooms
+const Room = require("../models/Room");
 
-// Route to handle a player's move
-router.post("/move", (req, res) => {
-  // This route can be used for HTTP-based move handling if needed
-  res.status(200).json({ message: "Use Socket.io to handle a move." });
-});
-
-// Route to leave a game
-router.post("/leave-game", (req, res) => {
-  // This route can be used for HTTP-based game leaving if needed
-  res.status(200).json({ message: "Use Socket.io to leave a game." });
-});
-
-
-router.post("/conclude-game", async (req, res) => {
-  const { roomId } = req.body;
-
+router.get("/rooms", protect, async (req, res, next) => {
   try {
-    const room = await Room.findOne({ roomId });
-    if (!room || !room.game) {
-      return res.status(404).json({ message: "Room or game not found." });
-    }
-
-    const game = await Game.findById(room.game).populate("players.user");
-
-    if (!game.gameOn) {
-      return res.status(400).json({ message: "Game is not active." });
-    }
-
-    // Conclude the game (replicate concludeGame logic from controller)
-    await concludeGame(null, null, game);
-
-    res.status(200).json({ message: "Game concluded successfully." });
+    const rooms = await Room.find({}); // Add filters if needed
+    res.status(200).json({ success: true, data: rooms });
   } catch (error) {
-    console.error("Error concluding game:", error);
-    res.status(500).json({ message: "Server error." });
+    next(error);
   }
 });
 
-
-
+// Export the router
 module.exports = router;

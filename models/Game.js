@@ -1,6 +1,7 @@
 // models/Game.js
 
 const mongoose = require("mongoose");
+const { shuffleDeck, createDeck } = require("../utils/helper"); // Add this line
 
 const CardSchema = new mongoose.Schema(
   {
@@ -78,5 +79,35 @@ const GameSchema = new mongoose.Schema({
     default: Date.now,
   },
 });
+
+GameSchema.pre("save", function (next) {
+  if (this.deck.length !== 52) {
+    return next(new Error("Deck must contain exactly 52 cards."));
+  }
+  next();
+});
+
+GameSchema.virtual("remainingCards").get(function () {
+  return this.deck.length;
+});
+
+
+// In Game model
+GameSchema.methods.resetGame = function () {
+  this.players.forEach(player => {
+    player.bet = 0;
+    player.cards = [];
+    player.sum = 0;
+    player.hasAce = false;
+    player.isReady = false;
+    player.blackjack = false;
+    player.hasLeft = false;
+  });
+  this.dealer = { cards: [], sum: 0, hiddenCard: null };
+  this.deck = shuffleDeck(createDeck());
+  this.gameOn = false;
+  this.currentPlayerIndex = 0;
+  this.isDealerTurn = false;
+};
 
 module.exports = mongoose.model("Game", GameSchema);

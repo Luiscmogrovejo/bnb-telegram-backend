@@ -1,5 +1,5 @@
 // controllers/gameController.js
-
+const mongoose = require("mongoose");
 const { v4: uuidv4 } = require("uuid");
 const Game = require("../models/Game");
 const Room = require("../models/Room");
@@ -13,126 +13,133 @@ dotenv.config();
 
 // Initialize Ethereum Provider and Contract
 const provider = new ethers.providers.InfuraProvider(
-  "rinkeby",
+  "sepolia",
   process.env.INFURA_PROJECT_ID
 );
 const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
 const betHandlerContract = new ethers.Contract(
   process.env.SMART_CONTRACT_ADDRESS,
-  BetHandlerABI,
+  BetHandlerABI.abi,
   wallet
 );
 
 const createGame = async (io, socket, data) => {
-  const { nickname, avatar, isOffline } = data;
+  const { nickname, avatar, isOffline, userId } = data;
 
-  // Create or find the user
-  let user = await User.findOne({
-    walletAddress: socket.handshake.query.walletAddress,
-  });
-  if (!user) {
-    user = new User({
-      walletAddress: socket.handshake.query.walletAddress,
-      nickname,
-      avatar,
+  try {
+    // Fetch the user using userId
+    let user = await User.findById(userId);
+    if (!user) {
+      return io.to(socket.id).emit("error", { message: "User not found." });
+    }
+
+    // Generate unique room ID
+    const roomId = uuidv4().split("-")[0]; // Shorten UUID for simplicity
+
+    // Create room
+    const room = new Room({
+      roomId,
+      isOffline,
+      players: [user._id],
+      spectators: [],
     });
-    await user.save();
+
+    await room.save();
+
+    // Join Socket.io room
+    socket.join(roomId);
+
+    // Emit room creation to the creator
+    io.to(socket.id).emit("gameCreated", { roomId, room });
+  } catch (error) {
+    console.error("Error creating game:", error);
+    io.to(socket.id).emit("error", { message: "Failed to create game." });
   }
-
-  // Generate unique room ID
-  const roomId = uuidv4().split("-")[0]; // Shorten UUID for simplicity
-
-  // Create room
-  const room = new Room({
-    roomId,
-    isOffline,
-    players: [user._id],
-    spectators: [],
-    // Game will be created when needed
-  });
-
-  await room.save();
-
-  // Join Socket.io room
-  socket.join(roomId);
-
-  // Emit room creation to the creator
-  io.to(socket.id).emit("gameCreated", { roomId, room });
 };
-
 const joinGame = async (io, socket, data) => {
   const { roomId, nickname, avatar } = data;
 
-  const room = await Room.findOne({ roomId })
-    .populate("players")
-    .populate("spectators");
-  if (!room) {
-    io.to(socket.id).emit("error", { message: "Room not found." });
-    return;
-  }
+  try {
+    // Fetch the user using socket.user.id
+    let user = await User.findById(socket.user.id);
+    if (!user) {
+      io.to(socket.id).emit("error", { message: "User not found." });
+      return;
+    }
 
-  // Create or find the user
-  let user = await User.findOne({
-    walletAddress: socket.handshake.query.walletAddress,
-  });
-  if (!user) {
-    user = new User({
-      walletAddress: socket.handshake.query.walletAddress,
-      nickname,
-      avatar,
-    });
-    await user.save();
-  }
+    // Find the room
+    const room = await Room.findOne({ roomId })
+      .populate("players")
+      .populate("spectators");
+    if (!room) {
+      io.to(socket.id).emit("error", { message: "Room not found." });
+      return;
+    }
 
-  // Check if room is full
-  if (room.players.length >= 7) {
-    io.to(socket.id).emit("error", { message: "Room is full." });
-    return;
-  }
+    // Check if room is full
+    if (room.players.length >= 7) {
+      io.to(socket.id).emit("error", { message: "Room is full." });
+      return;
+    }
 
-  // Add player to the room
-  room.players.push(user._id);
-  await room.save();
+    // Add player to the room
+    room.players.push(user._id);
+    await room.save();
 
-  // Join Socket.io room
-  socket.join(roomId);
+    // Join Socket.io room
+    socket.join(roomId);
 
-  // Emit to all players in the room about the new player
-  const updatedPlayers = await User.find({ _id: { $in: room.players } });
-  io.to(roomId).emit("playerJoined", { players: updatedPlayers });
+    // Emit to all players in the room about the new player
+    const updatedPlayers = await User.find({ _id: { $in: room.players } });
+    io.to(roomId).emit("playerJoined", { players: updatedPlayers });
 
-  // Optionally, emit current game state if a game is already ongoing
-  if (room.game) {
-    const game = await Game.findById(room.game).populate("players.user");
-    io.to(socket.id).emit("currentGameState", { game });
+    // Optionally, emit current game state if a game is already ongoing
+    if (room.game) {
+      const game = await Game.findById(room.game).populate("players.user");
+      io.to(socket.id).emit("currentGameState", { game });
+    }
+  } catch (error) {
+    console.error("Error in joinGame:", error);
+    io.to(socket.id).emit("error", { message: "Failed to join game." });
   }
 };
 
 const handleBet = async (io, socket, data) => {
   const { roomId, betAmount } = data;
 
-  const room = await Room.findOne({ roomId }).populate("players");
-  if (!room) {
-    io.to(socket.id).emit("error", { message: "Room not found." });
-    return;
-  }
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-  const user = await User.findOne({
-    walletAddress: socket.handshake.query.walletAddress,
-  });
-  if (!user) {
-    io.to(socket.id).emit("error", { message: "User not found." });
-    return;
-  }
+  try {
+    const room = await Room.findOne({ roomId }).populate("players").session(session);
+    if (!room) {
+      await session.abortTransaction();
+      session.endSession();
+      io.to(socket.id).emit("error", { message: "Room not found." });
+      return;
+    }
 
-  if (betAmount > user.balance) {
-    io.to(socket.id).emit("error", { message: "Insufficient balance." });
-    return;
-  }
+    const user = await User.findOne({
+      walletAddress: socket.handshake.query.walletAddress,
+    }).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      session.endSession();
+      io.to(socket.id).emit("error", { message: "User not found." });
+      return;
+    }
 
-  // Deduct bet from user's balance
-  user.balance -= betAmount;
-  await user.save();
+    if (betAmount > user.balance) {
+      await session.abortTransaction();
+      session.endSession();
+      io.to(socket.id).emit("error", { message: "Insufficient balance." });
+      return;
+    }
+
+    // Deduct bet from user's balance
+    user.balance -= betAmount;
+    await user.save({ session });
+
 
   // If no game exists, create one
   let game;
@@ -188,6 +195,12 @@ const handleBet = async (io, socket, data) => {
   if (allBetsPlaced && !game.gameOn) {
     startGame(io, roomId, game);
   }
+} catch (error) {
+  console.error("Error placing bet:", error);
+  await session.abortTransaction();
+  session.endSession();
+  io.to(socket.id).emit("error", { message: "Failed to place bet." });
+}
 };
 
 const startGame = async (io, roomId, game) => {
@@ -405,26 +418,38 @@ const concludeGame = async (io, roomId, game) => {
 };
 
 const handleWinPayout = async (player) => {
-  // Payout via smart contract
-  const tx = await betHandlerContract.payoutWin(
-    player.user.walletAddress,
-    player.bet
-  );
-  await tx.wait();
+  try {
+    // Payout via smart contract
+    const tx = await betHandlerContract.payoutWin(
+      player.user.walletAddress,
+      player.bet
+    );
+    await tx.wait();
 
-  // Update player's balance locally
-  const user = await User.findById(player.user._id);
-  user.balance += player.bet * 2;
-  await user.save();
+    // Update player's balance locally
+    const user = await User.findById(player.user._id);
+    user.balance += player.bet * 2;
+    await user.save();
+  } catch (error) {
+    console.error("Smart contract transaction failed:", error);
+    // Implement compensating actions, such as reverting the balance deduction
+    console.log("Reverting balance deduction...");
+    // Optionally, notify the user about the failure
+    console.log("Notifying user about the failure...");
+  }
 };
 
 const handlePushPayout = async (player) => {
   // Refund bet via smart contract
-  const tx = await betHandlerContract.payoutPush(
-    player.user.walletAddress,
-    player.bet
-  );
-  await tx.wait();
+  try {
+    const tx = await betHandlerContract.payoutPush(
+      player.user.walletAddress,
+      player.bet
+    );
+    await tx.wait();
+  } catch (error) {
+    console.error("Smart contract transaction failed:", error);
+  }
 
   // Update player's balance locally
   const user = await User.findById(player.user._id);
@@ -434,11 +459,15 @@ const handlePushPayout = async (player) => {
 
 const handleBlackjackPayout = async (player) => {
   // Payout 1.5x via smart contract
-  const tx = await betHandlerContract.payoutBlackjack(
-    player.user.walletAddress,
-    player.bet
-  );
-  await tx.wait();
+  try {
+    const tx = await betHandlerContract.payoutBlackjack(
+      player.user.walletAddress,
+      player.bet
+    );
+    await tx.wait();
+  } catch (error) {
+    console.error("Smart contract transaction failed:", error);
+  }
 
   // Update player's balance locally
   const user = await User.findById(player.user._id);
@@ -451,4 +480,5 @@ module.exports = {
   joinGame,
   handleBet,
   handlePlayerMove,
+  concludeGame,
 };
