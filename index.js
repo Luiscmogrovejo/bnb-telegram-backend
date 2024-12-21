@@ -1,14 +1,13 @@
-// index.js
-
+// index.js (revised)
 const express = require("express");
 const http = require("http");
 const socketIo = require("socket.io");
 const cors = require("cors");
 const mongoose = require("mongoose");
 const dotenv = require("dotenv");
-const helmet = require("helmet"); // Correct placement
+const helmet = require("helmet");
 const apiRoutes = require("./routes/api");
-const gameSockets = require("./sockets/gameSockets"); // Ensure correct casing
+const gameSockets = require("./sockets/gameSockets");
 const { connectDB } = require("./config/db");
 
 // Load environment variables
@@ -54,10 +53,13 @@ const io = socketIo(server, {
   },
 });
 
+// Make io accessible via app locals
+app.locals.io = io;
+
 // Error Handling Middleware (should be after all routes)
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(500).json({ message: "Internal Server Error" });
+  res.status(500).json({ success: false, message: "Internal Server Error" });
 });
 
 // Handle Socket.io connections

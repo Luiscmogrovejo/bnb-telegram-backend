@@ -14,20 +14,32 @@ const protect = async (req, res, next) => {
     req.headers.authorization.startsWith("Bearer")
   ) {
     try {
+      // Extract token from header
       token = req.headers.authorization.split(" ")[1];
+
+      // Verify token
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+      // Attach user to request
       req.user = await User.findById(decoded.id).select("-password");
-      return next(); // Ensure the function exits after successful authentication
+
+      if (!req.user) {
+        return res
+          .status(401)
+          .json({ success: false, message: "Not authorized, user not found." });
+      }
+
+      next();
     } catch (error) {
-      console.error(error);
-      return res
+      console.error("Authentication error:", error);
+      res
         .status(401)
         .json({ success: false, message: "Not authorized, token failed." });
     }
   }
 
   if (!token) {
-    return res
+    res
       .status(401)
       .json({ success: false, message: "Not authorized, no token." });
   }

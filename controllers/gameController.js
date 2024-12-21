@@ -104,6 +104,8 @@ const joinGame = async (io, socket, data) => {
   }
 };
 
+const timers = {}; // Object to hold timers for each room
+
 const handleBet = async (io, socket, data) => {
   const { roomId, betAmount } = data;
 
@@ -111,7 +113,9 @@ const handleBet = async (io, socket, data) => {
   session.startTransaction();
 
   try {
-    const room = await Room.findOne({ roomId }).populate("players").session(session);
+    const room = await Room.findOne({ roomId })
+      .populate("players")
+      .session(session);
     if (!room) {
       await session.abortTransaction();
       session.endSession();
@@ -140,70 +144,94 @@ const handleBet = async (io, socket, data) => {
     user.balance -= betAmount;
     await user.save({ session });
 
+    // If no game exists, create one
+    let game;
+    if (!room.game) {
+      game = new Game({
+        room: room._id,
+        players: room.players.map((playerId) => ({
+          user: playerId,
+          bet: 0,
+          cards: [],
+          sum: 0,
+          hasAce: false,
+          isReady: false,
+          blackjack: false,
+          hasLeft: false,
+        })),
+        dealer: {
+          cards: [],
+          sum: 0,
+          hiddenCard: null,
+        },
+        deck: shuffleDeck(createDeck()),
+        gameOn: false,
+        currentPlayerIndex: 0,
+        isDealerTurn: false,
+      });
+      await game.save();
+      room.game = game._id;
+      await room.save();
+    } else {
+      game = await Game.findById(room.game);
+    }
 
-  // If no game exists, create one
-  let game;
-  if (!room.game) {
-    game = new Game({
-      room: room._id,
-      players: room.players.map((playerId) => ({
-        user: playerId,
-        bet: 0,
-        cards: [],
-        sum: 0,
-        hasAce: false,
-        isReady: false,
-        blackjack: false,
-        hasLeft: false,
-      })),
-      dealer: {
-        cards: [],
-        sum: 0,
-        hiddenCard: null,
-      },
-      deck: shuffleDeck(createDeck()),
-      gameOn: false,
-      currentPlayerIndex: 0,
-      isDealerTurn: false,
-    });
-    await game.save();
-    room.game = game._id;
-    await room.save();
-  } else {
-    game = await Game.findById(room.game);
+    // Find the player in the game
+    const player = game.players.find(
+      (p) => p.user.toString() === user._id.toString()
+    );
+    if (!player) {
+      io.to(socket.id).emit("error", {
+        message: "Player not found in the game.",
+      });
+      return;
+    }
+
+    // Place the bet
+    player.bet += betAmount;
+
+    // Emit updated bets to all players
+    io.to(roomId).emit("betsUpdated", { players: game.players });
+
+    // Start the timer if it's the first bet
+    if (!timers[roomId]) {
+      timers[roomId] = setTimeout(() => {
+        startGame(io, roomId, game);
+        delete timers[roomId]; // Clean up the timer after starting the game
+      }, 60000); // 60 seconds
+      io.to(roomId).emit("timerStarted", { duration: 60 });
+    }
+
+    // Optionally, you can reset the timer if additional bets are allowed
+    // For example, extend the timer by another 30 seconds on each new bet
+    // Uncomment the following lines if desired:
+    /*
+    else {
+      clearTimeout(timers[roomId]);
+      timers[roomId] = setTimeout(() => {
+        startGame(io, roomId, game);
+        delete timers[roomId];
+      }, 30000); // Extend by 30 seconds
+      io.to(roomId).emit("timerExtended", { duration: 30 });
+    }
+    */
+
+    await session.commitTransaction();
+    session.endSession();
+  } catch (error) {
+    console.error("Error placing bet:", error);
+    await session.abortTransaction();
+    session.endSession();
+    io.to(socket.id).emit("error", { message: "Failed to place bet." });
   }
-
-  // Find the player in the game
-  const player = game.players.find(
-    (p) => p.user.toString() === user._id.toString()
-  );
-  if (!player) {
-    io.to(socket.id).emit("error", {
-      message: "Player not found in the game.",
-    });
-    return;
-  }
-
-  // Place the bet
-  player.bet += betAmount;
-
-  // Emit updated bets to all players
-  io.to(roomId).emit("betsUpdated", { players: game.players });
-
-  // Check if all players have placed their bets
-  const allBetsPlaced = game.players.every((p) => p.bet > 0);
-  if (allBetsPlaced && !game.gameOn) {
-    startGame(io, roomId, game);
-  }
-} catch (error) {
-  console.error("Error placing bet:", error);
-  await session.abortTransaction();
-  session.endSession();
-  io.to(socket.id).emit("error", { message: "Failed to place bet." });
-}
 };
 
 const startGame = async (io, roomId, game) => {
+  // Clear the timer if it exists
+  if (timers[roomId]) {
+    clearTimeout(timers[roomId]);
+    delete timers[roomId];
+  }
   game.gameOn = true;
 
   // Deal initial cards to players
@@ -475,10 +503,141 @@ const handleBlackjackPayout = async (player) => {
   await user.save();
 };
 
+const gameService = require("../services/gameService");
+
+const createGameExpress = async (req, res) => {
+  try {
+    const room = await gameService.createGameRoom({
+      nickname: req.body.nickname,
+      avatar: req.body.avatar,
+      isOffline: req.body.isOffline,
+      userId: req.user._id,
+    });
+
+    res.status(201).json({
+      success: true,
+      roomId: room.roomId,
+      room,
+    });
+  } catch (error) {
+    console.error("Error creating game:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+const joinGameExpress = async (req, res) => {
+  const { roomId, nickname, avatar, userId } = req.body;
+
+  try {
+    const room = await Room.findOne({ roomId })
+      .populate("players")
+      .populate("spectators");
+    if (!room) {
+      return res.status(404).json({ success: false, message: "Room not found." });
+    }
+
+    if (room.players.length >= 7) {
+      return res.status(400).json({ success: false, message: "Room is full." });
+    }
+
+    // Add player to the room
+    room.players.push(userId);
+    await room.save();
+
+    const updatedPlayers = await User.find({ _id: { $in: room.players } });
+
+    res.status(200).json({ success: true, players: updatedPlayers });
+  } catch (error) {
+    console.error("Error joining game:", error);
+    res.status(500).json({ success: false, message: "Failed to join game." });
+  }
+};
+
+const placeBetExpress = async (req, res) => {
+  const { roomId, betAmount } = req.body;
+  const userId = req.user._id;
+
+  try {
+    const result = await gameService.placeBet({ roomId, betAmount, userId });
+    res
+      .status(200)
+      .json({
+        success: true,
+        message: "Bet placed successfully.",
+        data: result,
+      });
+  } catch (error) {
+    console.error("Error placing bet:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+const playerMoveExpress = async (req, res) => {
+  const { roomId, move, userId } = req.body;
+
+  try {
+    // Fetch game and perform move logic
+    // ...
+
+    res.status(200).json({ success: true, message: "Move executed successfully." });
+  } catch (error) {
+    console.error("Error executing move:", error);
+    res.status(500).json({ success: false, message: "Failed to execute move." });
+  }
+};
+
+const leaveGameExpress = async (req, res) => {
+  const { roomId, userId } = req.body;
+
+  try {
+    const room = await Room.findOne({ roomId })
+      .populate("players")
+      .populate("spectators");
+    if (!room) {
+      return res.status(404).json({ success: false, message: "Room not found." });
+    }
+
+    // Remove user from players
+    room.players = room.players.filter(
+      (playerId) => playerId.toString() !== userId.toString()
+    );
+    // Optionally, add to spectators
+    room.spectators.push(userId);
+
+    await room.save();
+
+    const updatedPlayers = await User.find({ _id: { $in: room.players } });
+
+    res.status(200).json({ success: true, players: updatedPlayers });
+
+    // If no players left, delete the room and associated game
+    if (room.players.length === 0) {
+      if (room.game) {
+        await Game.findByIdAndDelete(room.game);
+      }
+      await Room.findByIdAndDelete(room._id);
+      res.status(200).json({
+        success: true,
+        message: "Room has been closed due to no active players.",
+      });
+    }
+  } catch (error) {
+    console.error("Error leaving game:", error);
+    res.status(500).json({ success: false, message: "Failed to leave game." });
+  }
+};
+
+
 module.exports = {
   createGame,
   joinGame,
   handleBet,
   handlePlayerMove,
   concludeGame,
+  createGameExpress,
+  joinGameExpress,
+  placeBetExpress,
+  playerMoveExpress,
+  leaveGameExpress,
+  
 };
