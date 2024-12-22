@@ -28,17 +28,31 @@ const betHandlerContract = new ethers.Contract(
 const timers = {};
 
 const createGameRoom = async ({ nickname, avatar, isOffline, userId }) => {
-  const roomId = uuidv4().split("-")[0]; // Shorten UUID for simplicity
-
-  console.log("Creating room for user:", userId); // Debugging line
+  const roomId = uuidv4().split("-")[0];
 
   const room = new Room({
     roomId,
     isOffline,
-    players: [userId], // Correctly set userId
-    spectators: [],
+    players: [userId],
   });
 
+  const game = new Game({
+    room: room._id,
+    players: [
+      {
+        user: userId,
+        bet: 0,
+        cards: [],
+        sum: 0,
+        hasAce: false,
+      },
+    ],
+    deck: shuffleDeck(createDeck()), // Initialize deck
+  });
+
+  room.game = game._id;
+
+  await game.save();
   await room.save();
 
   return room;
@@ -66,19 +80,17 @@ const joinGameRoom = async ({ roomId, userId }) => {
 };
 
 // Place a bet
-const placeBet = async ({ roomId, betAmount, userId }) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
+const placeBet = async ({ roomId, betAmount, userId, io }) => {
   try {
     const room = await Room.findOne({ roomId })
       .populate("players")
-      .session(session);
+      .populate("spectators");
+
     if (!room) {
       throw new Error("Room not found.");
     }
 
-    const user = await User.findById(userId).session(session);
+    const user = await User.findById(userId);
     if (!user) {
       throw new Error("User not found.");
     }
@@ -87,13 +99,14 @@ const placeBet = async ({ roomId, betAmount, userId }) => {
       throw new Error("Insufficient balance.");
     }
 
-    // Deduct bet from user's balance
+    // Deduct bet from user's balance atomically
     user.balance -= betAmount;
-    await user.save({ session });
+    await user.save();
 
-    // If no game exists, create one
+    // Find or create the game
     let game;
     if (!room.game) {
+      // Create a new game
       game = new Game({
         room: room._id,
         players: room.players.map((playerId) => ({
@@ -120,7 +133,11 @@ const placeBet = async ({ roomId, betAmount, userId }) => {
       room.game = game._id;
       await room.save();
     } else {
+      // Retrieve existing game
       game = await Game.findById(room.game);
+      if (!game) {
+        throw new Error("Game associated with room not found.");
+      }
     }
 
     // Find the player in the game
@@ -134,31 +151,41 @@ const placeBet = async ({ roomId, betAmount, userId }) => {
     // Place the bet
     player.bet += betAmount;
 
-    // Emit updated bets to all players (handled by caller)
+    // Save the game state atomically
+    await Game.findByIdAndUpdate(game._id, {
+      $set: { players: game.players },
+    });
+
+    // Emit updated bets to all players
+    io.to(roomId).emit("betsUpdated", { players: game.players });
 
     // Start the timer if it's the first bet
     if (!timers[roomId]) {
-      timers[roomId] = setTimeout(() => {
-        startGame(roomId, game);
-        delete timers[roomId];
+      timers[roomId] = setTimeout(async () => {
+        try {
+          // Retrieve the game again before starting
+          const updatedGame = await Game.findById(game._id);
+          if (updatedGame) {
+            await startGame(io, roomId, updatedGame);
+          }
+        } catch (timerError) {
+          console.error("Error starting game after timer:", timerError);
+        } finally {
+          delete timers[roomId]; // Clean up the timer
+        }
       }, 60000); // 60 seconds
     }
 
-    await game.save();
-
-    await session.commitTransaction();
-    session.endSession();
-
     return { game, timerStarted: !timers[roomId] };
   } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
+    console.error("Error in placeBet:", error.message);
     throw error;
   }
 };
 
+
 // Start the game
-const startGame = async (roomId, game) => {
+const startGame = async (io, roomId, game) => {
   game.gameOn = true;
 
   // Deal initial cards to players
@@ -169,8 +196,7 @@ const startGame = async (roomId, game) => {
     player.hasAce = player.cards.some((card) => card.value === "A");
     if (player.sum === 21) {
       player.blackjack = true;
-      // Handle blackjack payout via smart contract
-      await handleBlackjackPayout(player);
+      await handleBlackjackPayout(player); // Handle blackjack payout
     }
   }
 
@@ -183,10 +209,16 @@ const startGame = async (roomId, game) => {
 
   await game.save();
 
-  // Emit game started event (handled by caller)
+  // Emit game started event
+  io.to(roomId).emit("gameStarted", { game });
 
-  // Notify the first player to take action (handled by caller)
+  // Notify the first player to take action
+  const currentPlayer = game.players[game.currentPlayerIndex];
+  io.to(currentPlayer.user.toString()).emit("yourTurn", {
+    player: currentPlayer,
+  });
 };
+
 
 // Handle player move (Hit, Stand, Double Down)
 const handlePlayerMove = async ({ roomId, move, userId }) => {
@@ -328,10 +360,20 @@ const concludeGame = async (roomId, game) => {
     }
     if (game.dealer.sum > 21) {
       // Dealer busted, player wins
-      await handleWinPayout(player);
+try {
+  await handleWinPayout(player);
+} catch (error) {
+  console.error("Payout failed:", error.message);
+}
+
     } else if (player.sum > game.dealer.sum) {
       // Player wins
-      await handleWinPayout(player);
+try {
+  await handleWinPayout(player);
+} catch (error) {
+  console.error("Payout failed:", error.message);
+}
+
     } else if (player.sum === game.dealer.sum) {
       // Push, refund bet via smart contract
       await handlePushPayout(player);

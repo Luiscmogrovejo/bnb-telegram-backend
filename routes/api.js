@@ -1,8 +1,7 @@
-// routes/api.js
-
 const express = require("express");
 const router = express.Router();
 const { body, validationResult } = require("express-validator");
+const mongoose = require("mongoose");
 const { signup, login } = require("../controllers/authController");
 const { protect } = require("../middleware/authMiddleware");
 const {
@@ -11,7 +10,10 @@ const {
   placeBetExpress,
   playerMoveExpress,
   leaveGameExpress,
+  startGame,
 } = require("../controllers/gameController");
+const Game = require("../models/Game");
+const Room = require("../models/Room");
 
 // Authentication Routes
 router.post(
@@ -21,13 +23,12 @@ router.post(
     body("password")
       .isLength({ min: 8 })
       .withMessage("Password must be at least 8 characters long")
-      .matches(/(?=.*[A-Z])/)
+      .matches(/(?=.*[A-Z])/, "i")
       .withMessage("Password must contain at least one uppercase letter")
       .matches(/(?=.*\d)/)
       .withMessage("Password must contain at least one number")
       .matches(/(?=.*[@$!%*?&])/)
       .withMessage("Password must contain at least one special character"),
-    // Add other validations as needed
   ],
   async (req, res, next) => {
     const errors = validationResult(req);
@@ -48,15 +49,7 @@ router.post(
     body("walletAddress").isString().trim().escape(),
     body("password")
       .isLength({ min: 8 })
-      .withMessage("Password must be at least 8 characters long")
-      .matches(/(?=.*[A-Z])/)
-      .withMessage("Password must contain at least one uppercase letter")
-      .matches(/(?=.*\d)/)
-      .withMessage("Password must contain at least one number")
-      .matches(/(?=.*[@$!%*?&])/)
-      .withMessage("Password must contain at least one special character"),
-
-    // Add other validations as needed
+      .withMessage("Password must be at least 8 characters long"),
   ],
   async (req, res, next) => {
     const errors = validationResult(req);
@@ -72,11 +65,9 @@ router.post(
 );
 
 // Get All Active Rooms
-const Room = require("../models/Room");
-
 router.get("/rooms", protect, async (req, res, next) => {
   try {
-    const rooms = await Room.find({ status: "active" }); // Fetch only active rooms
+    const rooms = await Room.find({ status: "active" });
     res.status(200).json({ success: true, data: rooms });
   } catch (error) {
     next(error);
@@ -184,18 +175,44 @@ router.post("/games/:roomId/leave", protect, async (req, res, next) => {
 // Get game state
 router.get("/games/:roomId", protect, async (req, res, next) => {
   try {
-    const game = await Game.findOne({ room: req.params.roomId })
+    // Find the room by `roomId` string
+    const room = await Room.findOne({ roomId: req.params.roomId }).exec();
+
+    if (!room) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Room not found." });
+    }
+
+    // Use the room's associated game ID to fetch the game
+    const game = await Game.findOne({ _id: room.game })
       .populate("players.user")
-      .populate("dealer")
-      .lean();
+      .populate("dealer");
+
     if (!game) {
       return res
         .status(404)
         .json({ success: false, message: "Game not found." });
     }
+
     res.status(200).json({ success: true, data: game });
   } catch (error) {
+    console.error("Error fetching game:", error);
     next(error);
+  }
+});
+
+router.post("/games/:roomId/start", async (req, res) => {
+  try {
+    const roomId = req.params.roomId;
+    const room = await Room.findOne({ roomId })
+      .populate("players")
+      .populate("game");
+    const game = await Game.findById(room.game);
+    await startGame(req.app.locals.io, roomId, game);
+    res.status(200).json({ success: true, message: "Game started." });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 

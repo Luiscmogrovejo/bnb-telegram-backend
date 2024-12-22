@@ -26,7 +26,8 @@ const calculateSum = (cards) => {
   return sum;
 };
 
-// Create a standard deck of 52 cards
+// utils/helper.js
+
 const createDeck = () => {
   const suits = ["Heart", "Diamond", "Spade", "Club"];
   const values = [
@@ -44,30 +45,28 @@ const createDeck = () => {
     "K",
     "A",
   ];
-  let deck = [];
-
+  const deck = [];
   suits.forEach((suit) => {
     values.forEach((value) => {
       deck.push({
         suit,
         value,
-        img: `/imgs/${suit}${value}.svg`, // Ensure these images exist in your frontend/public folder
+        img: `/imgs/${suit}${value}.svg`,
       });
     });
   });
-
   return deck;
 };
 
-// Shuffle the deck using Fisher-Yates algorithm
 const shuffleDeck = (deck) => {
-  if (!Array.isArray(deck)) throw new Error("Invalid deck array");
   for (let i = deck.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [deck[i], deck[j]] = [deck[j], deck[i]];
   }
   return deck;
 };
+
+module.exports = { createDeck, shuffleDeck };
 
 module.exports = {
   calculateSum,

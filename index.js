@@ -7,9 +7,11 @@ const mongoose = require("mongoose");
 const dotenv = require("dotenv");
 const helmet = require("helmet");
 const apiRoutes = require("./routes/api");
-const gameSockets = require("./sockets/gameSockets");
+const gameSockets = require("./sockets/gamesockets");
 const { connectDB } = require("./config/db");
-
+const errorMiddleware = require("./middleware/errorMiddleware");
+const RoomManager = require("./managers/RoomManager");
+const roomManager = new RoomManager();
 // Load environment variables
 dotenv.config();
 
@@ -38,6 +40,7 @@ const app = express();
 app.use(helmet()); // Moved after app initialization
 app.use(cors());
 app.use(express.json());
+app.use(errorMiddleware);
 
 // API Routes
 app.use("/api", apiRoutes);
@@ -45,12 +48,23 @@ app.use("/api", apiRoutes);
 // Create HTTP server
 const server = http.createServer(app);
 
-// Initialize Socket.io
+// Initialize Socket.IO
 const io = socketIo(server, {
   cors: {
-    origin: process.env.FRONTEND_URL, // e.g., https://your-frontend.com
+    origin: process.env.FRONTEND_URL,
     methods: ["GET", "POST"],
   },
+});
+
+// Use the gameSockets module
+io.on("connection", (socket) => {
+    require("./sockets/gamesockets")(io, socket, roomManager);
+  console.log(`New client connected: ${socket.id}`);
+  gameSockets(io, socket, roomManager);
+
+  socket.on("disconnect", () => {
+    console.log(`Client disconnected: ${socket.id}`);
+  });
 });
 
 // Make io accessible via app locals
@@ -67,7 +81,7 @@ io.on("connection", (socket) => {
   console.log(`New client connected: ${socket.id}`);
 
   // Initialize game sockets
-  gameSockets(io, socket);
+  gameSockets(io, socket, roomManager);
 
   // Handle disconnection
   socket.on("disconnect", () => {
@@ -75,6 +89,8 @@ io.on("connection", (socket) => {
     // Additional cleanup can be performed here
   });
 });
+
+
 
 // Start the server
 const PORT = process.env.PORT || 8080;
@@ -85,6 +101,9 @@ server.listen(PORT, () => {
 // Graceful Shutdown
 process.on("SIGTERM", () => {
   server.close(() => {
+    io.close(() => {
+      console.log("Socket.IO server closed.");
+    });
     console.log("Process terminated");
     mongoose.connection.close(false, () => {
       console.log("MongoDB connection closed.");

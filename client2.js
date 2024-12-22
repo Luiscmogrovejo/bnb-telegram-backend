@@ -1,41 +1,42 @@
-// client2.js
-
+// File: client2.js
 const io = require("socket.io-client");
 
 // Replace with your backend URL
 const BACKEND_URL = "http://localhost:8080";
 
-// Replace with Player Two's JWT token
+// User 2's JWT token
 const JWT_TOKEN =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY3NjVmYWMyYTc1NjAyYjdjMmMwNTk5YyIsImlhdCI6MTczNDczNjU5OCwiZXhwIjoxNzM3MzI4NTk4fQ._4Qq1lKc9i6i3_gG2IA5nDVl30KdmK-a_-4PHgouHqk";
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY3NjcwYjVjOWVmMWRlNWVhZGZjZmFkOSIsImlhdCI6MTczNDgwNjM4MCwiZXhwIjoxNzM3Mzk4MzgwfQ.oshYL6nGXxhFA25bmxvINnpe8KxRBiUrQuEYbkAoYX0";
 
-// Initialize Socket.io client with authentication
+// Initialize the socket connection
 const socket = io(BACKEND_URL, {
-  auth: {
-    token: JWT_TOKEN,
-  },
+  auth: { token: JWT_TOKEN },
 });
 
-// Handle connection
+const roomId = "room-pe6rjg"; // Replace with the roomId created by User 1
+
+// On successful connection
 socket.on("connect", () => {
-  console.log("Player Two connected with Socket ID:", socket.id);
+  console.log("User 2 connected with Socket ID:", socket.id);
 
-  // Replace with the roomId created by Player One
-  const roomId = "4f218f03";
-
-  // Step 2: Join the Game Room
+  // Join the room
   socket.emit(
     "joinGame",
-    {
-      roomId: roomId,
-      nickname: "PlayerTwo",
-      avatar: "avatar2.png",
-    },
+    { roomId, nickname: "User2", avatar: "avatar2.png" },
     (response) => {
       if (response.status === "success") {
-        console.log(`Player Two joined game room: ${roomId}`);
-        // Proceed to place a bet
-        placeBet(roomId, 100);
+        console.log("User 2 joined the room successfully.");
+
+        // Place a bet
+        setTimeout(() => {
+          socket.emit("placeBet", { roomId, betAmount: 150 }, (response) => {
+            if (response.status === "success") {
+              console.log("User 2 placed a bet.");
+            } else {
+              console.error("Error placing bet:", response.message);
+            }
+          });
+        }, 2000);
       } else {
         console.error("Error joining game room:", response.message);
       }
@@ -43,25 +44,48 @@ socket.on("connect", () => {
   );
 });
 
-// Function to place a bet
-const placeBet = (roomId, amount) => {
+// Handle events from the server
+socket.on("gameStarted", (data) => {
+  console.log("Game Started:", data);
+});
+
+socket.on("betsUpdated", (data) => {
+  console.log("Bets Updated:", data);
+});
+
+socket.on("yourTurn", (data) => {
+  console.log("It's User 2's turn:", data);
+
+  // Simulate a player move (e.g., hit)
   socket.emit(
-    "placeBet",
-    {
-      roomId: roomId,
-      betAmount: amount,
-    },
+    "playerMove",
+    { roomId: data.game.roomId, move: "hit" },
     (response) => {
       if (response.status === "success") {
-        console.log("Player Two placed a bet successfully.");
+        console.log("User 2 executed move: hit.");
       } else {
-        console.error("Error placing bet:", response.message);
+        console.error("Error making a move:", response.message);
       }
     }
   );
-};
+});
 
-// Listen for other events similarly as in client.js
-// ...
+socket.on("dealerRevealed", (data) => {
+  console.log("Dealer revealed card:", data.card);
+});
 
-// Implement other event listeners as needed
+socket.on("dealerHit", (data) => {
+  console.log("Dealer hits and draws a card:", data.card);
+});
+
+socket.on("dealerBusted", (data) => {
+  console.log("Dealer busted with sum:", data.sum);
+});
+
+socket.on("dealerStands", (data) => {
+  console.log("Dealer stands with sum:", data.sum);
+});
+
+socket.on("gameConcluded", (data) => {
+  console.log("Game Concluded:", data);
+});

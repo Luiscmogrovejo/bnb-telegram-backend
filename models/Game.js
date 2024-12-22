@@ -1,7 +1,7 @@
 // models/Game.js
 
 const mongoose = require("mongoose");
-const { shuffleDeck, createDeck } = require("../utils/helper"); // Add this line
+const { shuffleDeck, createDeck } = require("../utils/helper");
 
 const CardSchema = new mongoose.Schema(
   {
@@ -31,15 +31,7 @@ const PlayerSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
-    isReady: {
-      type: Boolean,
-      default: false,
-    },
     blackjack: {
-      type: Boolean,
-      default: false,
-    },
-    hasLeft: {
       type: Boolean,
       default: false,
     },
@@ -61,7 +53,16 @@ const GameSchema = new mongoose.Schema({
     },
     hiddenCard: CardSchema,
   },
-  deck: [CardSchema],
+  deck: {
+    type: [CardSchema],
+    default: () => shuffleDeck(createDeck()), // Default to a shuffled deck
+    validate: {
+      validator: function (deck) {
+        return deck.length === 52;
+      },
+      message: "Deck must contain exactly 52 cards.",
+    },
+  },
   gameOn: {
     type: Boolean,
     default: false,
@@ -70,44 +71,24 @@ const GameSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
-  isDealerTurn: {
-    type: Boolean,
-    default: false,
-  },
   createdAt: {
     type: Date,
     default: Date.now,
   },
 });
 
-GameSchema.pre("save", function (next) {
-  if (this.deck.length !== 52) {
-    return next(new Error("Deck must contain exactly 52 cards."));
-  }
-  next();
-});
-
-GameSchema.virtual("remainingCards").get(function () {
-  return this.deck.length;
-});
-
-
-// In Game model
 GameSchema.methods.resetGame = function () {
-  this.players.forEach(player => {
+  this.players.forEach((player) => {
     player.bet = 0;
     player.cards = [];
     player.sum = 0;
     player.hasAce = false;
-    player.isReady = false;
     player.blackjack = false;
-    player.hasLeft = false;
   });
   this.dealer = { cards: [], sum: 0, hiddenCard: null };
-  this.deck = shuffleDeck(createDeck());
+  this.deck = shuffleDeck(createDeck()); // Reset the deck
   this.gameOn = false;
   this.currentPlayerIndex = 0;
-  this.isDealerTurn = false;
 };
 
 module.exports = mongoose.model("Game", GameSchema);

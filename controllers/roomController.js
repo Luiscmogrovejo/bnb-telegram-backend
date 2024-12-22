@@ -4,10 +4,12 @@ const Room = require("../models/Room");
 const Game = require("../models/Game");
 const User = require("../models/User");
 const { v4: uuidv4 } = require("uuid");
+const roomManager = require("../managers/RoomManager");
 
 const leaveGame = async (io, socket, data) => {
   const { roomId } = data;
-
+await Room.findByIdAndDelete(room._id);
+roomManager.rooms.delete(roomId);
   const room = await Room.findOne({ roomId })
     .populate("players")
     .populate("spectators");
@@ -15,6 +17,12 @@ const leaveGame = async (io, socket, data) => {
     io.to(socket.id).emit("error", { message: "Room not found." });
     return;
   }
+if (room.players.length === 0) {
+  if (room.game) await Game.findByIdAndDelete(room.game);
+  await Room.findByIdAndDelete(room._id);
+  io.to(roomId).emit("roomClosed", { message: "Room has been closed." });
+  console.log(`Room ${roomId} deleted.`);
+}
 
   const user = await User.findOne({
     walletAddress: socket.handshake.query.walletAddress,
@@ -23,7 +31,9 @@ const leaveGame = async (io, socket, data) => {
     io.to(socket.id).emit("error", { message: "User not found." });
     return;
   }
-
+if (!room.spectators.includes(user._id)) {
+  room.spectators.push(user._id);
+}
   // Remove user from players
   room.players = room.players.filter(
     (playerId) => playerId.toString() !== user._id.toString()
