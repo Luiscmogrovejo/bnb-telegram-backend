@@ -1,4 +1,3 @@
-// File: client2.js
 const io = require("socket.io-client");
 
 // Replace with your backend URL
@@ -13,7 +12,7 @@ const socket = io(BACKEND_URL, {
   auth: { token: JWT_TOKEN },
 });
 
-const roomId = "room-pe6rjg"; // Replace with the roomId created by User 1
+const roomId = "room-ly7p7m"; // Replace with the roomId created by User 1
 
 // On successful connection
 socket.on("connect", () => {
@@ -56,18 +55,18 @@ socket.on("betsUpdated", (data) => {
 socket.on("yourTurn", (data) => {
   console.log("It's User 2's turn:", data);
 
-  // Simulate a player move (e.g., hit)
-  socket.emit(
-    "playerMove",
-    { roomId: data.game.roomId, move: "hit" },
-    (response) => {
-      if (response.status === "success") {
-        console.log("User 2 executed move: hit.");
-      } else {
-        console.error("Error making a move:", response.message);
-      }
+  // Automate move decision
+  const move = data.player.sum < 17 ? "hit" : "stand";
+  console.log(`User 2 decides to ${move}`);
+
+  // Simulate a player move
+  socket.emit("playerMove", { roomId: data.game.roomId, move }, (response) => {
+    if (response.status === "success") {
+      console.log(`User 2 executed move: ${move}`);
+    } else {
+      console.error("Error making a move:", response.message);
     }
-  );
+  });
 });
 
 socket.on("dealerRevealed", (data) => {

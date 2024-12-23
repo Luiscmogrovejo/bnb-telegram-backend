@@ -23,35 +23,61 @@ const betHandlerContract = new ethers.Contract(
   wallet
 );
 
+// controllers/gameController.js
+
+// Replace your createGame with something like this:
 const createGame = async (io, socket, roomManager, data) => {
   try {
+    // 1. Generate a roomId
     const roomId = `room-${Math.random().toString(36).substring(2, 8)}`;
-    const room = roomManager.createRoom(roomId);
-    room.addPlayer(socket.user.id);
 
-    // Initialize the game
-    const game = new Game({
-      roomId: room.roomId,
-      players: [{ user: socket.user.id }],
-      deck: shuffleDeck(createDeck()),
+    // 2. Create DB-based room
+    const dbRoom = new Room({
+      roomId: roomId,
+      isOffline: data.isOffline || false,
+      players: [socket.user.id],
     });
+    await dbRoom.save();
 
-    // Set the game in the room
-    room.setGame(game);
+    // 3. Create DB-based game
+    const dbGame = new Game({
+      room: dbRoom._id,
+      players: [
+        {
+          user: socket.user.id,
+          bet: 0,
+          cards: [],
+          sum: 0,
+          hasAce: false,
+          blackjack: false,
+        },
+      ],
+      deck: shuffleDeck(createDeck()),
+      gameOn: false,
+      currentPlayerIndex: 0,
+    });
+    await dbGame.save();
 
-    // Filter players after initializing the game
-    game.players = game.players.filter((player) => player.user);
-    if (game.players.length === 0) {
-      io.to(roomId).emit("error", { message: "No players in the game." });
-      return;
-    }
+    // 4. Link game <-> room in the DB
+    dbRoom.game = dbGame._id;
+    await dbRoom.save();
 
+    // 5. Create or get an in-memory room
+    const memoryRoom = roomManager.createRoom(roomId);
+    memoryRoom.setGame(dbGame);   // Link the Mongoose Game doc to memory-based GameRoom
+    memoryRoom.addPlayer(socket.user.id);
+
+    // 6. Join the socket.io room
     socket.join(roomId);
-    io.to(socket.id).emit("gameCreated", { roomId });
 
+    // 7. Optionally emit or callback
     if (data.callback) {
       data.callback({ status: "success", roomId });
     }
+
+    // You might also do an `io.to(socket.id).emit("gameCreated", { roomId });`
+    // to let front-end know the creation was successful.
+
   } catch (error) {
     console.error("Error creating game:", error);
     if (data.callback) {
@@ -60,53 +86,54 @@ const createGame = async (io, socket, roomManager, data) => {
   }
 };
 
-const joinGame = async (io, socket, data) => {
-  const { roomId, nickname, avatar } = data;
+
+const joinGame = async (io, socket, roomManager, data) => {
+  const { roomId } = data;
 
   try {
-    // Fetch the user using socket.user.id
-    let user = await User.findById(socket.user.id);
-    if (!user) {
-      io.to(socket.id).emit("error", { message: "User not found." });
-      return;
+    // 1. Fetch from DB
+    const dbRoom = await Room.findOne({ roomId }).populate("players");
+    if (!dbRoom) {
+      return io.to(socket.id).emit("error", { message: "Room not found." });
     }
 
-    // Find the room
-    const room = await Room.findOne({ roomId })
-      .populate("players")
-      .populate("spectators");
-    if (!room) {
-      io.to(socket.id).emit("error", { message: "Room not found." });
-      return;
+    // 2. Ensure room isn't full
+    if (dbRoom.players.length >= 7) {
+      return io.to(socket.id).emit("error", { message: "Room is full." });
     }
 
-    // Check if room is full
-    if (room.players.length >= 7) {
-      io.to(socket.id).emit("error", { message: "Room is full." });
-      return;
+    // 3. Add user to DB-based room
+    if (!dbRoom.players.some((p) => p._id.equals(socket.user.id))) {
+      dbRoom.players.push(socket.user.id);
+      await dbRoom.save();
     }
 
-    // Add player to the room
-    room.players.push(user._id);
-    await room.save();
+    // 4. Add user to memory-based room
+    let memoryRoom = roomManager.getRoom(roomId);
+    if (!memoryRoom) {
+      // If it wasn't created in memory for some reason, create it
+      memoryRoom = roomManager.createRoom(roomId);
+    }
+    memoryRoom.addPlayer(socket.user.id);
 
-    // Join Socket.io room
+    // 5. Link DB-based game to the memory-based room
+    let dbGame = await Game.findById(dbRoom.game);
+    if (dbGame) {
+      memoryRoom.setGame(dbGame);
+    }
+
+    // 6. Join socket.io room
     socket.join(roomId);
 
-    // Emit to all players in the room about the new player
-    const updatedPlayers = await User.find({ _id: { $in: room.players } });
+    // 7. Notify all players in that room
+    const updatedPlayers = await User.find({ _id: { $in: dbRoom.players } });
     io.to(roomId).emit("playerJoined", { players: updatedPlayers });
-
-    // Optionally, emit current game state if a game is already ongoing
-    if (room.game) {
-      const game = await Game.findById(room.game).populate("players.user");
-      io.to(socket.id).emit("currentGameState", { game });
-    }
-  } catch (error) {
-    console.error("Error in joinGame:", error);
+  } catch (err) {
+    console.error("Error in joinGame:", err);
     io.to(socket.id).emit("error", { message: "Failed to join game." });
   }
 };
+
 
 const timers = {}; // Object to store timers for each room
 
@@ -296,6 +323,7 @@ const startGame = async (io, roomId, game) => {
     io.to(roomId).emit("gameStarted", { game });
 
     // Notify the first player to take action
+    // In controllers/gameController.js → startGame()
     const currentPlayer = game.players[game.currentPlayerIndex];
     if (currentPlayer) {
       io.to(currentPlayer.user.toString()).emit("yourTurn", {
@@ -318,111 +346,105 @@ const handlePlayerMove = async (io, socket, data) => {
     return;
   }
 
-  const game = await Game.findById(room.game)
-    .populate("players.user")
-    .populate("dealer");
+  const game = await Game.findById(room.game).populate("players.user");
   if (!game.gameOn) {
     io.to(socket.id).emit("error", { message: "Game is not active." });
     return;
   }
 
+  // Identify the current player
   const currentPlayer = game.players[game.currentPlayerIndex];
-  if (!currentPlayer || currentPlayer.moveInProgress) {
-    return io
-      .to(socket.id)
-      .emit("error", { message: "Move already in progress." });
+  if (!currentPlayer) {
+    io.to(socket.id).emit("error", { message: "No current player found." });
+    return;
   }
+
+  // If the move is already in progress, block new moves
+  if (currentPlayer.moveInProgress) {
+    io.to(socket.id).emit("error", { message: "Move already in progress." });
+    return;
+  }
+
+  // Mark move as in progress
   currentPlayer.moveInProgress = true;
   await game.save();
 
-  if (move === "hit") {
-    const card = game.deck.pop();
-    currentPlayer.cards.push(card);
-    currentPlayer.sum = calculateSum(currentPlayer.cards);
-    currentPlayer.hasAce = currentPlayer.cards.some(
-      (card) => card.value === "A"
-    );
+  try {
+    // --- Perform the chosen move ---
+    if (move === "hit") {
+      const card = game.deck.pop();
+      currentPlayer.cards.push(card);
+      currentPlayer.sum = calculateSum(currentPlayer.cards);
 
-    if (currentPlayer.sum > 21) {
-      // Player busts
-      io.to(roomId).emit("playerBusted", { playerId: currentPlayer.user._id });
-      nextPlayer(io, roomId, game);
-    } else if (currentPlayer.sum === 21) {
-      // Player has 21
-      io.to(roomId).emit("player21", { playerId: currentPlayer.user._id });
-      nextPlayer(io, roomId, game);
-    } else {
-      // Continue player's turn
-      io.to(roomId).emit("playerHit", {
-        playerId: currentPlayer.user._id,
-        card,
-      });
-      // Optionally, allow player to take another action
+      if (currentPlayer.sum > 21) {
+        io.to(roomId).emit("playerBusted", {
+          playerId: currentPlayer.user._id,
+        });
+        await nextPlayer(io, roomId, game);
+      } else if (currentPlayer.sum === 21) {
+        io.to(roomId).emit("player21", { playerId: currentPlayer.user._id });
+        await nextPlayer(io, roomId, game);
+      } else {
+        // Let the same player continue if they want to hit again
+        io.to(roomId).emit("playerHit", {
+          playerId: currentPlayer.user._id,
+          card,
+        });
+      }
+    } else if (move === "stand") {
+      io.to(roomId).emit("playerStands", { playerId: currentPlayer.user._id });
+      await nextPlayer(io, roomId, game);
+    } else if (move === "doubleDown") {
+      // Double down logic
     }
 
+    // Store the player's chosen move in the database
+    currentPlayer.move = move;
     await game.save();
-  } else if (move === "stand") {
-    // Player stands, move to next player
-    io.to(roomId).emit("playerStands", { playerId: currentPlayer.user._id });
-    nextPlayer(io, roomId, game);
-    await game.save();
-  } else if (move === "doubleDown") {
-    if (currentPlayer.bet > currentPlayer.user.balance) {
-      io.to(socket.id).emit("error", {
-        message: "Insufficient balance for Double Down.",
-      });
-      return;
-    }
-
-    // Double the bet
-    currentPlayer.bet *= 2;
-    currentPlayer.user.balance -= currentPlayer.bet;
-    await currentPlayer.user.save();
-
-    // Draw one final card
-    const card = game.deck.pop();
-    currentPlayer.cards.push(card);
-    currentPlayer.sum = calculateSum(currentPlayer.cards);
-    currentPlayer.hasAce = currentPlayer.cards.some(
-      (card) => card.value === "A"
-    );
-
-    io.to(roomId).emit("playerDoubleDown", {
-      playerId: currentPlayer.user._id,
-      card,
-    });
-
-    if (currentPlayer.sum > 21) {
-      // Player busts
-      io.to(roomId).emit("playerBusted", { playerId: currentPlayer.user._id });
-    }
-    io.to(currentPlayer.user._id.toString()).emit("yourTurn", {
-      player: currentPlayer,
-      game: game,
-    });
-
-    nextPlayer(io, roomId, game);
+  } catch (err) {
+    console.error("Error handling player move:", err);
+    io.to(socket.id).emit("error", { message: err.message });
+  } finally {
+    // **Always reset the moveInProgress flag!**
+    currentPlayer.moveInProgress = false;
     await game.save();
   }
 };
-
+// Next player logic
 const nextPlayer = async (io, roomId, game) => {
+  // Move to next index
   game.currentPlayerIndex += 1;
+  await game.save();
 
+  // If we've passed the last player, go to dealer turn
   if (game.currentPlayerIndex >= game.players.length) {
-    await dealerTurn(io, roomId, game); // Dealer's turn after all players
-  } else {
-    const nextPlayer = game.players[game.currentPlayerIndex];
-    io.to(nextPlayer.user.toString()).emit("yourTurn", { player: nextPlayer });
-
-    setTimeout(() => {
-      if (!nextPlayer.move) {
-        nextPlayer.move = "Stand"; // Default action
-        console.log(`Player ${nextPlayer.user._id} defaulted to Stand.`);
-        nextPlayer(io, roomId, game); // Move to the next player
-      }
-    }, 60000); // 1-minute timeout
+    await dealerTurn(io, roomId, game);
+    return;
   }
+
+  // Identify the next player
+  const nextPlayerObj = game.players[game.currentPlayerIndex];
+
+  // Notify the next player
+  io.to(nextPlayerObj.user.toString()).emit("yourTurn", {
+    player: nextPlayerObj,
+    game,
+  });
+
+  // Start a 60-second timeout in case the next player doesn't move
+setTimeout(async () => {
+  // Re-fetch the game
+  const updatedGame = await Game.findById(game._id).populate("players.user");
+  const updatedPlayer = updatedGame.players[updatedGame.currentPlayerIndex];
+
+  // If this player STILL hasn’t made a move, default to "stand"
+  if (!updatedPlayer.move) {
+    updatedPlayer.move = "stand";
+    console.log(`Player ${updatedPlayer.user._id} defaulted to Stand.`);
+    await updatedGame.save();
+    await nextPlayer(io, roomId, updatedGame);
+  }
+}, 60000);
 };
 
 const dealerTurn = async (io, roomId, game) => {

@@ -38,6 +38,10 @@ module.exports = (io, socket, roomManager) => {
     }
   });
 
+  // After successful authentication, join the user’s private room:
+  socket.join(socket.user.id);
+
+  console.log(`Socket ${socket.id} joined private room: ${socket.user.id}`);
   console.log(`Socket connected: ${socket.id}`);
 
   // Handle creating a game
@@ -73,7 +77,7 @@ module.exports = (io, socket, roomManager) => {
   // Handle joining a game
   socket.on("joinGame", async ({ roomId }, callback) => {
     try {
-      await joinGame(io, socket, { roomId, userId: socket.user.id });
+      await joinGame(io, socket, roomManager,{ roomId, userId: socket.user.id });
       callback({ status: "success" });
     } catch (err) {
       console.error("Error in joinGame:", err.message);
@@ -115,15 +119,15 @@ module.exports = (io, socket, roomManager) => {
     }
   });
 
-socket.on("playerMove", async ({ roomId, move }, callback) => {
-  try {
-    await handlePlayerMove(io, socket, { roomId, move });
-    callback({ status: "success" });
-  } catch (err) {
-    console.error("Error in playerMove:", err.message);
-    callback({ status: "error", message: "Failed to execute move." });
-  }
-});
+  socket.on("playerMove", async ({ roomId, move }, callback) => {
+    try {
+      await handlePlayerMove(io, socket, { roomId, move });
+      callback({ status: "success" });
+    } catch (err) {
+      console.error("Error in playerMove:", err.message);
+      callback({ status: "error", message: "Failed to execute move." });
+    }
+  });
 
   // Handle leaving a game
   socket.on("leaveGame", async ({ roomId }, callback) => {

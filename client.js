@@ -1,4 +1,3 @@
-// File: client.js
 const io = require("socket.io-client");
 
 // Replace with your backend URL
@@ -60,18 +59,18 @@ socket.on("betsUpdated", (data) => {
 socket.on("yourTurn", (data) => {
   console.log("It's User 1's turn:", data);
 
-  // Simulate a player move (e.g., hit)
-  socket.emit(
-    "playerMove",
-    { roomId: data.game.roomId, move: "hit" },
-    (response) => {
-      if (response.status === "success") {
-        console.log("User 1 executed move: hit.");
-      } else {
-        console.error("Error making a move:", response.message);
-      }
+  // Automate move decision
+  const move = data.player.sum < 17 ? "hit" : "stand";
+  console.log(`User 1 decides to ${move}`);
+
+  // Simulate a player move
+  socket.emit("playerMove", { roomId: data.game.roomId, move }, (response) => {
+    if (response.status === "success") {
+      console.log(`User 1 executed move: ${move}`);
+    } else {
+      console.error("Error making a move:", response.message);
     }
-  );
+  });
 });
 
 socket.on("dealerRevealed", (data) => {

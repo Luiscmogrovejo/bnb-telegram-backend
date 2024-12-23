@@ -12,6 +12,8 @@ const { connectDB } = require("./config/db");
 const errorMiddleware = require("./middleware/errorMiddleware");
 const RoomManager = require("./managers/RoomManager");
 const roomManager = new RoomManager();
+
+
 // Load environment variables
 dotenv.config();
 
@@ -38,23 +40,35 @@ const app = express();
 
 // Middleware
 app.use(helmet()); // Moved after app initialization
-app.use(cors());
-app.use(express.json());
-app.use(errorMiddleware);
 
+app.use(
+  cors({
+    origin: [
+      "http://localhost:5173",
+      "http://localhost:3000",
+      "https//localhost:5173",
+      "https://localhost:3000",
+    ], // Allow both origins
+    methods: ["GET", "POST"],
+    credentials: true, // Include this if you are sending cookies or other credentials
+  })
+);
 // API Routes
 app.use("/api", apiRoutes);
-
+app.use(express.json());
+app.use(errorMiddleware);
 // Create HTTP server
 const server = http.createServer(app);
 
 // Initialize Socket.IO
 const io = socketIo(server, {
   cors: {
-    origin: process.env.FRONTEND_URL,
+    origin: ["http://localhost:5173"],
     methods: ["GET", "POST"],
+    credentials: true,
   },
 });
+
 
 // Use the gameSockets module
 io.on("connection", (socket) => {
@@ -81,6 +95,7 @@ io.on("connection", (socket) => {
   console.log(`New client connected: ${socket.id}`);
 
   // Initialize game sockets
+  require("./sockets/gamesockets")(io, socket, roomManager);
   gameSockets(io, socket, roomManager);
 
   // Handle disconnection
